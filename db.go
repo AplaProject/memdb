@@ -7,11 +7,6 @@ import (
 
 type Key string
 
-type Item struct {
-	Key   Key
-	Value string
-}
-
 type dbItem struct {
 	value string
 
