@@ -1,10 +1,10 @@
 package mvcc_attempt_test
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/yddmat/mvcc_attempt"
 )
 
@@ -20,30 +20,23 @@ func TestTransaction_Isolation(t *testing.T) {
 	err = tx1.Delete("1")
 	assert.Nil(t, err)
 
-	fmt.Println("1 GET:")
 	r1, err := tx1.Get("1")
-	fmt.Println("RESP:", r1, "err", err)
 	assert.Equal(t, mvcc_attempt.ErrNotFound, err)
 	assert.Equal(t, "", r1)
 
-	fmt.Println("2 GET:")
 	tx2 := db.Begin(false)
 	r2, err := tx2.Get("1")
-	fmt.Println("RESP:", r2)
 	assert.Nil(t, err)
 	assert.Equal(t, "first", r2)
 
 	tx1.Commit()
 
 	r2, err = tx2.Get("1")
-	fmt.Println("RESP:", r2)
 	assert.Equal(t, mvcc_attempt.ErrNotFound, err)
 	assert.Equal(t, "", r2)
 
-	fmt.Println("3 GET:")
 	tx3 := db.Begin(false)
 	r3, err := tx3.Get("1")
-	fmt.Println("RESP:", r3)
 	assert.Equal(t, mvcc_attempt.ErrNotFound, err)
 	assert.Equal(t, "", r3)
 
@@ -125,7 +118,6 @@ func TestTransaction_Update(t *testing.T) {
 
 	tx3 := db.Begin(true)
 	tx3.Update("1", "second")
-	fmt.Println("get")
 	r3, err := tx2.Get("1")
 	assert.Nil(t, err)
 	assert.Equal(t, "first", r3)
@@ -138,4 +130,37 @@ func TestTransaction_Update(t *testing.T) {
 	r5, err := tx2.Get("1")
 	assert.Nil(t, err)
 	assert.Equal(t, "second", r5)
+}
+
+func TestTransaction_AddIndex(t *testing.T) {
+	db := mvcc_attempt.NewDB()
+
+	tx1 := db.Begin(true)
+	err := tx1.Set("1", "abcde")
+	require.Nil(t, err)
+	err = tx1.Set("2", "ab")
+	require.Nil(t, err)
+	err = tx1.Set("3", "abc")
+	require.Nil(t, err)
+	err = tx1.Set("4", "a")
+	require.Nil(t, err)
+	err = tx1.Set("5", "abcd")
+	require.Nil(t, err)
+
+	assert.Error(t, tx1.Ascend("test-len", func(key mvcc_attempt.Key, value string) bool {
+		return true
+	}))
+
+	err = tx1.AddIndex(mvcc_attempt.NewIndex("test-len", "*", func(a, b string) bool {
+		return len(a) < len(b)
+	}))
+	require.Nil(t, err)
+
+	got := make([]mvcc_attempt.Key, 0)
+	assert.Nil(t, tx1.Ascend("test-len", func(key mvcc_attempt.Key, value string) bool {
+		got = append(got, key)
+		return true
+	}))
+
+	assert.Equal(t, []mvcc_attempt.Key{"4", "2", "3", "5", "1"}, got)
 }

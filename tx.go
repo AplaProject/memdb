@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 
 	"github.com/pkg/errors"
+	"github.com/tidwall/btree"
 )
 
 var (
@@ -30,9 +31,11 @@ func (tx *Transaction) Set(key Key, value string) error {
 	}
 
 	operation := atomic.AddUint64(&tx.operation, 1)
-	item := dbItem{createdTx: tx.id, createdOperation: operation, value: value}
+	item := &dbItem{key: key, createdTx: tx.id, createdOperation: operation, value: value}
 
 	tx.db.storage.set(key, item)
+	tx.db.indexes.insert(item)
+
 	return nil
 }
 
@@ -69,7 +72,7 @@ func (tx *Transaction) Delete(key Key) error {
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
 
-	tx.db.storage.set(key, item)
+	tx.db.storage.set(key, &item)
 
 	return nil
 }
@@ -92,10 +95,67 @@ func (tx *Transaction) Update(key Key, value string) error {
 
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
-	tx.db.storage.set(key, item)
+	tx.db.storage.set(key, &item)
 
-	item = dbItem{createdTx: tx.id, createdOperation: operation, value: value}
-	tx.db.storage.set(key, item)
+	updItem := &dbItem{createdTx: tx.id, createdOperation: operation, value: value}
+	tx.db.storage.set(key, updItem)
+
+	return nil
+}
+
+func (tx *Transaction) AddIndex(indexes ...*Index) error {
+	if tx.db == nil {
+		return ErrTxClosed
+	}
+
+	if !tx.writable {
+		return ErrTxNotWritable
+	}
+
+	operation := atomic.AddUint64(&tx.operation, 1)
+
+	for _, index := range indexes {
+		err := tx.db.indexes.addIndex(index)
+		if err != nil {
+			return err
+		}
+
+		tx.db.storage.mu.RLock()
+		tx.db.storage.mu.RUnlock()
+		for key, _ := range tx.db.storage.items {
+			revision, err := tx.getLastKeyRevision(key, operation, tx.id)
+			if err != nil {
+				tx.db.indexes.removeIndex(index.name)
+				return err
+			}
+
+			tx.db.indexes.insert(&revision, index.name)
+		}
+	}
+
+	return nil
+}
+
+func (tx *Transaction) Ascend(index string, iterator func(key Key, value string) bool) error {
+	if index == "" {
+		return ErrEmptyIndex
+	}
+
+	indexes := tx.db.roIndexes
+	if tx.writable {
+		indexes = tx.db.indexes
+	}
+
+	i := indexes.GetIndex(index)
+	if i == nil {
+		return ErrUnknownIndex
+	}
+
+	var item *dbItem
+	i.tree.Ascend(func(i btree.Item) bool {
+		item = i.(*dbItem)
+		return iterator(item.key, item.value)
+	})
 
 	return nil
 }
@@ -136,7 +196,6 @@ func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbIt
 	}
 
 	return dbItem{}, ErrNotFound
-
 }
 
 func (tx *Transaction) Commit() {

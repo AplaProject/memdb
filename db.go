@@ -3,11 +3,14 @@ package mvcc_attempt
 import (
 	"sync"
 	"sync/atomic"
+
+	"github.com/tidwall/btree"
 )
 
 type Key string
 
 type dbItem struct {
+	key   Key
 	value string
 
 	createdTx uint64
@@ -17,12 +20,30 @@ type dbItem struct {
 	deletedOperation uint64
 }
 
+func (i *dbItem) Less(item btree.Item, ctx interface{}) bool {
+	i2 := item.(*dbItem)
+	index, ok := ctx.(*Index)
+	if ok {
+		if index.sortFn != nil {
+			// Using an Index
+			if index.sortFn(i.value, i2.value) {
+				return true
+			}
+			if index.sortFn(i2.value, i.value) {
+				return false
+			}
+		}
+	}
+
+	return i.key < i2.key
+}
+
 type Items struct {
-	items map[Key][]dbItem
+	items map[Key][]*dbItem
 	mu    sync.RWMutex
 }
 
-func (it *Items) set(key Key, item dbItem) {
+func (it *Items) set(key Key, item *dbItem) {
 	it.mu.Lock()
 	it.items[key] = append(it.items[key], item)
 	it.mu.Unlock()
@@ -33,7 +54,9 @@ func (it *Items) get(key Key) []dbItem {
 	defer it.mu.RUnlock()
 
 	itemsCopy := make([]dbItem, len(it.items[key]))
-	copy(itemsCopy, it.items[key])
+	for _, item := range it.items[key] {
+		itemsCopy = append(itemsCopy, *item)
+	}
 
 	return itemsCopy
 }
@@ -41,7 +64,9 @@ func (it *Items) get(key Key) []dbItem {
 type Database struct {
 	writeMu sync.Mutex
 
-	storage Items
+	storage   Items
+	indexes   *Indexes
+	roIndexes *Indexes
 
 	writers TxsStatus
 	lastTx  uint64
@@ -49,7 +74,8 @@ type Database struct {
 
 func NewDB() *Database {
 	return &Database{
-		storage: Items{items: make(map[Key][]dbItem)},
+		storage: Items{items: make(map[Key][]*dbItem)},
+		indexes: newIndexer(),
 		writers: TxsStatus{storage: make(map[uint64]Status)},
 	}
 }
@@ -65,6 +91,7 @@ func (db *Database) Begin(writable bool) *Transaction {
 	if writable {
 		db.writeMu.Lock()
 		tx.writable = true
+		db.roIndexes = db.indexes.copy()
 	}
 
 	return tx
