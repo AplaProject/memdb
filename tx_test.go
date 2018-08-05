@@ -163,4 +163,9 @@ func TestTransaction_AddIndex(t *testing.T) {
 	}))
 
 	assert.Equal(t, []mvcc_attempt.Key{"4", "2", "3", "5", "1"}, got)
+
+	tx2 := db.Begin(false)
+	assert.Error(t, tx2.Ascend("test-len", func(key mvcc_attempt.Key, value string) bool {
+		return true
+	}))
 }
