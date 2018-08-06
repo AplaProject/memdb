@@ -64,9 +64,8 @@ func (it *Items) get(key Key) []dbItem {
 type Database struct {
 	writeMu sync.Mutex
 
-	storage   Items
-	indexes   *Indexes
-	roIndexes *Indexes
+	storage Items
+	indexes *Indexes
 
 	writers TxsStatus
 	lastTx  uint64
@@ -91,7 +90,7 @@ func (db *Database) Begin(writable bool) *Transaction {
 	if writable {
 		db.writeMu.Lock()
 		tx.writable = true
-		db.roIndexes = db.indexes.copy()
+		tx.newIndexes = db.indexes.copy()
 	}
 
 	return tx

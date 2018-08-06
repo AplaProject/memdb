@@ -18,6 +18,8 @@ type Transaction struct {
 	writable  bool
 	operation uint64
 
+	newIndexes *Indexes
+
 	db *Database
 }
 
@@ -34,7 +36,7 @@ func (tx *Transaction) Set(key Key, value string) error {
 	item := &dbItem{key: key, createdTx: tx.id, createdOperation: operation, value: value}
 
 	tx.db.storage.set(key, item)
-	tx.db.indexes.insert(item)
+	tx.newIndexes.insert(item)
 
 	return nil
 }
@@ -115,7 +117,7 @@ func (tx *Transaction) AddIndex(indexes ...*Index) error {
 	operation := atomic.AddUint64(&tx.operation, 1)
 
 	for _, index := range indexes {
-		err := tx.db.indexes.addIndex(index)
+		err := tx.newIndexes.addIndex(index)
 		if err != nil {
 			return err
 		}
@@ -125,11 +127,11 @@ func (tx *Transaction) AddIndex(indexes ...*Index) error {
 		for key, _ := range tx.db.storage.items {
 			revision, err := tx.getLastKeyRevision(key, operation, tx.id)
 			if err != nil {
-				tx.db.indexes.removeIndex(index.name)
+				tx.newIndexes.removeIndex(index.name)
 				return err
 			}
 
-			tx.db.indexes.insert(&revision, index.name)
+			tx.newIndexes.insert(&revision, index.name)
 		}
 	}
 
@@ -141,9 +143,9 @@ func (tx *Transaction) Ascend(index string, iterator func(key Key, value string)
 		return ErrEmptyIndex
 	}
 
-	indexes := tx.db.roIndexes
+	indexes := tx.db.indexes
 	if tx.writable {
-		indexes = tx.db.indexes
+		indexes = tx.newIndexes
 	}
 
 	i := indexes.GetIndex(index)
@@ -201,6 +203,7 @@ func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbIt
 func (tx *Transaction) Commit() {
 	if tx.writable {
 		tx.db.writers.set(tx.id, StatusDone)
+		tx.db.indexes = tx.newIndexes
 		tx.db.writeMu.Unlock()
 	}
 
@@ -210,6 +213,7 @@ func (tx *Transaction) Commit() {
 func (tx *Transaction) Rollback() {
 	if tx.writable && tx.db.writers.Get(tx.id) != StatusDone {
 		tx.db.writers.set(tx.id, StatusRollback)
+		tx.newIndexes = nil
 	}
 
 	tx.db = nil

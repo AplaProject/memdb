@@ -100,7 +100,18 @@ func (idxer *Indexes) insert(item *dbItem, to ...string) {
 	}
 }
 
-// TODO
 func (idxer *Indexes) copy() *Indexes {
-	return &Indexes{}
+	newIndexer := newIndexer()
+
+	for _, oldIdx := range idxer.storage {
+		newIdx := NewIndex(oldIdx.name, oldIdx.pattern, oldIdx.sortFn)
+		newIdx.tree = oldIdx.tree.Clone()
+
+		err := newIndexer.addIndex(newIdx)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	return newIndexer
 }
