@@ -1,7 +1,8 @@
-package mvcc_attempt
+package memdb
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/tidwall/btree"
 	"github.com/tidwall/match"
@@ -35,8 +36,8 @@ func (idx *Index) insert(item btree.Item) {
 	idx.tree.ReplaceOrInsert(item)
 }
 
-// Indexes is not safe for concurrent use
 type Indexes struct {
+	mu      sync.RWMutex
 	storage map[string]*Index
 }
 
@@ -55,7 +56,9 @@ func (idxer *Indexes) addIndex(index *Index) error {
 		return ErrIndexExists
 	}
 
+	idxer.mu.Lock()
 	idxer.storage[index.name] = index
+	idxer.mu.Unlock()
 
 	return nil
 }
@@ -65,25 +68,33 @@ func (idxer *Indexes) removeIndex(name string) error {
 		return ErrEmptyIndex
 	}
 
+	idxer.mu.Lock()
 	delete(idxer.storage, name)
+	idxer.mu.Unlock()
+
 	return nil
 }
 
 func (idxer *Indexes) GetIndex(name string) *Index {
+	idxer.mu.RLock()
+	defer idxer.mu.RUnlock()
+
 	for indexName, index := range idxer.storage {
 		if name == indexName {
 			return index
 		}
 	}
+
 	return nil
 }
 
 func (idxer *Indexes) insert(item *dbItem, to ...string) {
-	in := func(slice []string, value string) bool {
-		if len(slice) == 0 {
-			return true
-		}
+	var all bool
+	if len(to) == 0 {
+		all = true
+	}
 
+	in := func(slice []string, value string) bool {
 		for _, v := range slice {
 			if v == value {
 				return true
@@ -93,16 +104,19 @@ func (idxer *Indexes) insert(item *dbItem, to ...string) {
 		return false
 	}
 
+	idxer.mu.Lock()
 	for _, index := range idxer.storage {
-		if in(to, index.name) && match.Match(string(item.key), index.pattern) {
+		if (all || in(to, index.name)) && match.Match(string(item.key), index.pattern) {
 			index.tree.ReplaceOrInsert(item)
 		}
 	}
+	idxer.mu.Unlock()
 }
 
 func (idxer *Indexes) copy() *Indexes {
 	newIndexer := newIndexer()
 
+	idxer.mu.RLock()
 	for _, oldIdx := range idxer.storage {
 		newIdx := NewIndex(oldIdx.name, oldIdx.pattern, oldIdx.sortFn)
 		newIdx.tree = oldIdx.tree.Clone()
@@ -112,6 +126,7 @@ func (idxer *Indexes) copy() *Indexes {
 			panic(err)
 		}
 	}
+	idxer.mu.RUnlock()
 
 	return newIndexer
 }

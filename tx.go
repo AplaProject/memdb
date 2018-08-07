@@ -1,4 +1,4 @@
-package mvcc_attempt
+package memdb
 
 import (
 	"sync/atomic"
@@ -35,7 +35,7 @@ func (tx *Transaction) Set(key Key, value string) error {
 	operation := atomic.AddUint64(&tx.operation, 1)
 	item := &dbItem{key: key, createdTx: tx.id, createdOperation: operation, value: value}
 
-	tx.db.storage.set(key, item)
+	tx.db.items.set(key, item)
 	tx.newIndexes.insert(item)
 
 	return nil
@@ -74,7 +74,7 @@ func (tx *Transaction) Delete(key Key) error {
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
 
-	tx.db.storage.set(key, &item)
+	tx.db.items.set(key, &item)
 
 	return nil
 }
@@ -97,15 +97,15 @@ func (tx *Transaction) Update(key Key, value string) error {
 
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
-	tx.db.storage.set(key, &item)
+	tx.db.items.set(key, &item)
 
 	updItem := &dbItem{createdTx: tx.id, createdOperation: operation, value: value}
-	tx.db.storage.set(key, updItem)
+	tx.db.items.set(key, updItem)
 
 	return nil
 }
 
-func (tx *Transaction) AddIndex(indexes ...*Index) error {
+func (tx *Transaction) AddIndex(index *Index) error {
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -116,23 +116,19 @@ func (tx *Transaction) AddIndex(indexes ...*Index) error {
 
 	operation := atomic.AddUint64(&tx.operation, 1)
 
-	for _, index := range indexes {
-		err := tx.newIndexes.addIndex(index)
+	err := tx.newIndexes.addIndex(index)
+	if err != nil {
+		return err
+	}
+
+	for _, key := range tx.db.items.keys() {
+		revision, err := tx.getLastKeyRevision(key, operation, tx.id)
 		if err != nil {
+			tx.newIndexes.removeIndex(index.name)
 			return err
 		}
 
-		tx.db.storage.mu.RLock()
-		tx.db.storage.mu.RUnlock()
-		for key, _ := range tx.db.storage.items {
-			revision, err := tx.getLastKeyRevision(key, operation, tx.id)
-			if err != nil {
-				tx.newIndexes.removeIndex(index.name)
-				return err
-			}
-
-			tx.newIndexes.insert(&revision, index.name)
-		}
+		tx.newIndexes.insert(&revision, index.name)
 	}
 
 	return nil
@@ -162,8 +158,39 @@ func (tx *Transaction) Ascend(index string, iterator func(key Key, value string)
 	return nil
 }
 
+func (tx *Transaction) Commit() error {
+	if tx.db == nil {
+		return ErrTxClosed
+	}
+
+	if tx.writable {
+		tx.db.indexes = tx.newIndexes
+		tx.db.writeTx.Unlock()
+	}
+
+	tx.db.writers.set(tx.id, StatusDone)
+	tx.db = nil
+
+	return nil
+}
+
+func (tx *Transaction) Rollback() error {
+	if tx.db == nil {
+		return ErrTxClosed
+	}
+
+	if tx.writable {
+		tx.newIndexes = nil
+	}
+
+	tx.db.writers.set(tx.id, StatusRollback)
+	tx.db = nil
+
+	return nil
+}
+
 func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbItem, error) {
-	items := tx.db.storage.get(key)
+	items := tx.db.items.get(key)
 	var item dbItem
 	for l := len(items) - 1; l >= 0; l-- {
 		item = items[l]
@@ -185,11 +212,11 @@ func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbIt
 		}
 
 		if txID > item.deletedTx {
-			if tx.db.writers.Get(item.deletedTx) == StatusDone {
+			if tx.db.writers.get(item.deletedTx) == StatusDone {
 				return dbItem{}, ErrNotFound
 			}
 
-			if tx.db.writers.Get(item.createdTx) == StatusDone {
+			if tx.db.writers.get(item.createdTx) == StatusDone {
 				return item, nil
 			}
 
@@ -198,23 +225,4 @@ func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbIt
 	}
 
 	return dbItem{}, ErrNotFound
-}
-
-func (tx *Transaction) Commit() {
-	if tx.writable {
-		tx.db.writers.set(tx.id, StatusDone)
-		tx.db.indexes = tx.newIndexes
-		tx.db.writeMu.Unlock()
-	}
-
-	tx.db = nil
-}
-
-func (tx *Transaction) Rollback() {
-	if tx.writable && tx.db.writers.Get(tx.id) != StatusDone {
-		tx.db.writers.set(tx.id, StatusRollback)
-		tx.newIndexes = nil
-	}
-
-	tx.db = nil
 }

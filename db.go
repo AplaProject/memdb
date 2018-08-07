@@ -1,4 +1,4 @@
-package mvcc_attempt
+package memdb
 
 import (
 	"sync"
@@ -39,13 +39,13 @@ func (i *dbItem) Less(item btree.Item, ctx interface{}) bool {
 }
 
 type Items struct {
-	items map[Key][]*dbItem
-	mu    sync.RWMutex
+	mu      sync.RWMutex
+	storage map[Key][]*dbItem
 }
 
 func (it *Items) set(key Key, item *dbItem) {
 	it.mu.Lock()
-	it.items[key] = append(it.items[key], item)
+	it.storage[key] = append(it.storage[key], item)
 	it.mu.Unlock()
 }
 
@@ -53,29 +53,41 @@ func (it *Items) get(key Key) []dbItem {
 	it.mu.RLock()
 	defer it.mu.RUnlock()
 
-	itemsCopy := make([]dbItem, len(it.items[key]))
-	for _, item := range it.items[key] {
+	itemsCopy := make([]dbItem, len(it.storage[key]))
+	for _, item := range it.storage[key] {
 		itemsCopy = append(itemsCopy, *item)
 	}
 
 	return itemsCopy
 }
 
-type Database struct {
-	writeMu sync.Mutex
+func (it *Items) keys() []Key {
+	keys := make([]Key, 0)
 
-	storage Items
+	it.mu.RLock()
+	for key := range it.storage {
+		keys = append(keys, key)
+	}
+
+	it.mu.RUnlock()
+	return keys
+}
+
+type Database struct {
+	writeTx sync.Mutex
+
+	items   Items
 	indexes *Indexes
 
-	writers TxsStatus
+	writers txsStatus
 	lastTx  uint64
 }
 
 func NewDB() *Database {
 	return &Database{
-		storage: Items{items: make(map[Key][]*dbItem)},
+		items:   Items{storage: make(map[Key][]*dbItem)},
 		indexes: newIndexer(),
-		writers: TxsStatus{storage: make(map[uint64]Status)},
+		writers: txsStatus{txs: make(map[uint64]Status)},
 	}
 }
 
@@ -88,10 +100,12 @@ func (db *Database) Begin(writable bool) *Transaction {
 	}
 
 	if writable {
-		db.writeMu.Lock()
+		db.writeTx.Lock()
 		tx.writable = true
 		tx.newIndexes = db.indexes.copy()
 	}
+
+	db.writers.set(txID, StatusRunning)
 
 	return tx
 }
@@ -100,23 +114,25 @@ type Status int8
 
 const (
 	StatusUnknown Status = iota
+	StatusRunning
 	StatusDone
 	StatusRollback
 )
 
-type TxsStatus struct {
-	storage map[uint64]Status
-	mu      sync.RWMutex
+// txsStatus is storing current writing transactions state
+type txsStatus struct {
+	txs map[uint64]Status
+	mu  sync.RWMutex
 }
 
-func (atx *TxsStatus) Get(tx uint64) Status {
+func (atx *txsStatus) get(tx uint64) Status {
 	atx.mu.RLock()
 	defer atx.mu.RUnlock()
-	return atx.storage[tx]
+	return atx.txs[tx]
 }
 
-func (atx *TxsStatus) set(tx uint64, status Status) {
+func (atx *txsStatus) set(tx uint64, status Status) {
 	atx.mu.Lock()
 	defer atx.mu.Unlock()
-	atx.storage[tx] = status
+	atx.txs[tx] = status
 }

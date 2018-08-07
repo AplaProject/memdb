@@ -1,4 +1,4 @@
-package mvcc_attempt
+package memdb
 
 import (
 	"testing"
