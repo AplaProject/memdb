@@ -10,23 +10,23 @@ import (
 
 func TestIndex_Insert(t *testing.T) {
 	indexer := newIndexer()
-	indexer.addIndex(NewIndex("test-length", "*.test", func(a, b string) bool {
+	indexer.AddIndex(NewIndex("test-length", "*.test", func(a, b string) bool {
 		return len(a) < len(b)
 	}))
 
-	indexer.insert(&dbItem{
+	indexer.Insert(&dbItem{
 		key: "1.test", value: "first",
 	})
 
-	indexer.insert(&dbItem{
+	indexer.Insert(&dbItem{
 		key: "2.test", value: "sec",
 	})
 
-	indexer.insert(&dbItem{
+	indexer.Insert(&dbItem{
 		key: "test", value: "wrong_key_value",
 	})
 
-	indexer.insert(&dbItem{
+	indexer.Insert(&dbItem{
 		key: "3.test", value: "thiiiird",
 	})
 
@@ -48,18 +48,18 @@ func TestIndex_Insert(t *testing.T) {
 func TestIndex_Copy(t *testing.T) {
 	indexer := newIndexer()
 
-	indexer.addIndex(NewIndex("test-length", "*.test", func(a, b string) bool {
+	indexer.AddIndex(NewIndex("test-length", "*.test", func(a, b string) bool {
 		return len(a) < len(b)
 	}))
 
-	indexer.insert(&dbItem{
+	indexer.Insert(&dbItem{
 		key: "1.test", value: "first",
 	})
-	indexer.insert(&dbItem{
+	indexer.Insert(&dbItem{
 		key: "2.test", value: "sec",
 	})
 
-	newIndexer := indexer.copy()
+	newIndexer := indexer.Copy()
 
 	store1 := make([]string, 0)
 	indexer.storage["test-length"].tree.Ascend(func(i btree.Item) bool {
@@ -77,7 +77,7 @@ func TestIndex_Copy(t *testing.T) {
 
 	assert.Equal(t, store1, store2)
 
-	newIndexer.insert(&dbItem{
+	newIndexer.Insert(&dbItem{
 		key: "3.test", value: "third",
 	})
 

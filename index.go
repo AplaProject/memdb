@@ -36,6 +36,10 @@ func (idx *Index) insert(item btree.Item) {
 	idx.tree.ReplaceOrInsert(item)
 }
 
+func (idx *Index) remove(item btree.Item) {
+	idx.tree.Delete(item)
+}
+
 type Indexes struct {
 	mu      sync.RWMutex
 	storage map[string]*Index
@@ -47,7 +51,7 @@ func newIndexer() *Indexes {
 	}
 }
 
-func (idxer *Indexes) addIndex(index *Index) error {
+func (idxer *Indexes) AddIndex(index *Index) error {
 	if index.name == "" {
 		return ErrEmptyIndex
 	}
@@ -63,7 +67,7 @@ func (idxer *Indexes) addIndex(index *Index) error {
 	return nil
 }
 
-func (idxer *Indexes) removeIndex(name string) error {
+func (idxer *Indexes) RemoveIndex(name string) error {
 	if name == "" {
 		return ErrEmptyIndex
 	}
@@ -88,32 +92,41 @@ func (idxer *Indexes) GetIndex(name string) *Index {
 	return nil
 }
 
-func (idxer *Indexes) insert(item *dbItem, to ...string) {
-	var all bool
-	if len(to) == 0 {
-		all = true
-	}
-
-	in := func(slice []string, value string) bool {
-		for _, v := range slice {
-			if v == value {
-				return true
-			}
-		}
-
-		return false
-	}
-
+func (idxer *Indexes) Insert(item *dbItem, to ...string) {
 	idxer.mu.Lock()
 	for _, index := range idxer.storage {
-		if (all || in(to, index.name)) && match.Match(string(item.key), index.pattern) {
-			index.tree.ReplaceOrInsert(item)
+		if idxer.fit(index.name, to) && match.Match(string(item.key), index.pattern) {
+			index.insert(item)
 		}
 	}
 	idxer.mu.Unlock()
 }
 
-func (idxer *Indexes) copy() *Indexes {
+func (idxer *Indexes) Remove(item *dbItem, from ...string) {
+	idxer.mu.Lock()
+	for _, index := range idxer.storage {
+		if idxer.fit(index.name, from) && match.Match(string(item.key), index.pattern) {
+			index.remove(item)
+		}
+	}
+	idxer.mu.Unlock()
+}
+
+func (idxer *Indexes) fit(current string, indexes []string) bool {
+	if len(indexes) == 0 {
+		return true
+	}
+
+	for _, v := range indexes {
+		if v == current {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (idxer *Indexes) Copy() *Indexes {
 	newIndexer := newIndexer()
 
 	idxer.mu.RLock()
@@ -121,7 +134,7 @@ func (idxer *Indexes) copy() *Indexes {
 		newIdx := NewIndex(oldIdx.name, oldIdx.pattern, oldIdx.sortFn)
 		newIdx.tree = oldIdx.tree.Clone()
 
-		err := newIndexer.addIndex(newIdx)
+		err := newIndexer.AddIndex(newIdx)
 		if err != nil {
 			panic(err)
 		}

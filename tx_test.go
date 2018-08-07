@@ -65,6 +65,17 @@ func TestTransaction_Set(t *testing.T) {
 	assert.Empty(t, r4)
 }
 
+func TestTransaction_SetAlreadyExists(t *testing.T) {
+	db := NewDB()
+
+	tx1 := db.Begin(true)
+	err := tx1.Set("1", "first")
+	assert.Nil(t, err)
+
+	err = tx1.Set("1", "first")
+	assert.Equal(t, ErrAlreadyExists, err)
+}
+
 func TestTransaction_Rollback(t *testing.T) {
 	db := NewDB()
 
@@ -99,6 +110,14 @@ func TestTransaction_Delete(t *testing.T) {
 	tx4 := db.Begin(false)
 	r4, err := tx4.Get("1")
 	assert.Empty(t, r4)
+	assert.Equal(t, ErrNotFound, err)
+}
+
+func TestTransaction_DeleteNonExistent(t *testing.T) {
+	db := NewDB()
+
+	tx1 := db.Begin(true)
+	err := tx1.Delete("1")
 	assert.Equal(t, ErrNotFound, err)
 }
 

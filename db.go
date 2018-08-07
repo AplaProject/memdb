@@ -102,7 +102,7 @@ func (db *Database) Begin(writable bool) *Transaction {
 	if writable {
 		db.writeTx.Lock()
 		tx.writable = true
-		tx.newIndexes = db.indexes.copy()
+		tx.newIndexes = db.indexes.Copy()
 	}
 
 	db.writers.set(txID, StatusRunning)

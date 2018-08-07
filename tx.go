@@ -9,6 +9,7 @@ import (
 
 var (
 	ErrNotFound      = errors.New("not found")
+	ErrAlreadyExists = errors.New("already exists")
 	ErrTxClosed      = errors.New("transaction closed")
 	ErrTxNotWritable = errors.New("transaction is not writable")
 )
@@ -33,10 +34,16 @@ func (tx *Transaction) Set(key Key, value string) error {
 	}
 
 	operation := atomic.AddUint64(&tx.operation, 1)
+
+	_, err := tx.getLastKeyRevision(key, operation, tx.id)
+	if err != ErrNotFound {
+		return ErrAlreadyExists
+	}
+
 	item := &dbItem{key: key, createdTx: tx.id, createdOperation: operation, value: value}
 
 	tx.db.items.set(key, item)
-	tx.newIndexes.insert(item)
+	tx.newIndexes.Insert(item)
 
 	return nil
 }
@@ -71,6 +78,8 @@ func (tx *Transaction) Delete(key Key) error {
 		return err
 	}
 
+	tx.newIndexes.Remove(&item)
+
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
 
@@ -98,9 +107,11 @@ func (tx *Transaction) Update(key Key, value string) error {
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
 	tx.db.items.set(key, &item)
+	tx.newIndexes.Remove(&item)
 
 	updItem := &dbItem{createdTx: tx.id, createdOperation: operation, value: value}
 	tx.db.items.set(key, updItem)
+	tx.newIndexes.Insert(&item)
 
 	return nil
 }
@@ -116,7 +127,7 @@ func (tx *Transaction) AddIndex(index *Index) error {
 
 	operation := atomic.AddUint64(&tx.operation, 1)
 
-	err := tx.newIndexes.addIndex(index)
+	err := tx.newIndexes.AddIndex(index)
 	if err != nil {
 		return err
 	}
@@ -124,11 +135,11 @@ func (tx *Transaction) AddIndex(index *Index) error {
 	for _, key := range tx.db.items.keys() {
 		revision, err := tx.getLastKeyRevision(key, operation, tx.id)
 		if err != nil {
-			tx.newIndexes.removeIndex(index.name)
+			tx.newIndexes.RemoveIndex(index.name)
 			return err
 		}
 
-		tx.newIndexes.insert(&revision, index.name)
+		tx.newIndexes.Insert(&revision, index.name)
 	}
 
 	return nil
