@@ -111,7 +111,7 @@ func (tx *Transaction) Update(key Key, value string) error {
 
 	updItem := &dbItem{createdTx: tx.id, createdOperation: operation, value: value}
 	tx.db.items.set(key, updItem)
-	tx.newIndexes.Insert(&item)
+	tx.newIndexes.Insert(updItem)
 
 	return nil
 }
@@ -146,6 +146,10 @@ func (tx *Transaction) AddIndex(index *Index) error {
 }
 
 func (tx *Transaction) Ascend(index string, iterator func(key Key, value string) bool) error {
+	if tx.db == nil {
+		return ErrTxClosed
+	}
+
 	if index == "" {
 		return ErrEmptyIndex
 	}

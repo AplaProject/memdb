@@ -1,8 +1,10 @@
 package memdb
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/tidwall/btree"
 )
@@ -53,7 +55,7 @@ func (it *Items) get(key Key) []dbItem {
 	it.mu.RLock()
 	defer it.mu.RUnlock()
 
-	itemsCopy := make([]dbItem, len(it.storage[key]))
+	itemsCopy := make([]dbItem, 0)
 	for _, item := range it.storage[key] {
 		itemsCopy = append(itemsCopy, *item)
 	}
@@ -94,6 +96,10 @@ func NewDB() *Database {
 func (db *Database) Begin(writable bool) *Transaction {
 	txID := atomic.AddUint64(&db.lastTx, 1)
 
+	if txID == math.MaxUint64 {
+		panic("max tx counter reached")
+	}
+
 	tx := &Transaction{
 		id: txID,
 		db: db,
@@ -108,6 +114,52 @@ func (db *Database) Begin(writable bool) *Transaction {
 	db.writers.set(txID, StatusRunning)
 
 	return tx
+}
+
+func (db *Database) background() {
+	t := time.NewTicker(time.Minute * 5)
+
+	for range t.C {
+		db.cleanOutdated()
+	}
+}
+
+func (db *Database) cleanOutdated() {
+	in := func(need uint64, items []uint64) bool {
+		for _, item := range items {
+			if item == need {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	running := db.writers.running()
+
+	db.items.mu.Lock()
+	for key, items := range db.items.storage {
+		actual := make([]*dbItem, 0)
+
+		for _, item := range items {
+			if item.deletedTx == 0 {
+				actual = append(actual, item)
+				continue
+			}
+
+			if in(item.deletedTx, running) {
+				actual = append(actual, item)
+				continue
+			}
+		}
+
+		if len(actual) == len(items) {
+			continue
+		}
+
+		db.items.storage[key] = actual
+	}
+	db.items.mu.Unlock()
 }
 
 type Status int8
@@ -135,4 +187,16 @@ func (atx *txsStatus) set(tx uint64, status Status) {
 	atx.mu.Lock()
 	defer atx.mu.Unlock()
 	atx.txs[tx] = status
+}
+
+func (atx *txsStatus) running() []uint64 {
+	var running []uint64
+	atx.mu.RLock()
+	for id, status := range atx.txs {
+		if status == StatusRunning {
+			running = append(running, id)
+		}
+	}
+	atx.mu.RUnlock()
+	return running
 }
