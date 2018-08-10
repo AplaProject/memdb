@@ -5,10 +5,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"os"
 )
 
 func TestTransaction_Isolation(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "first")
@@ -42,7 +43,7 @@ func TestTransaction_Isolation(t *testing.T) {
 }
 
 func TestTransaction_Set(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "first")
@@ -65,8 +66,34 @@ func TestTransaction_Set(t *testing.T) {
 	assert.Empty(t, r4)
 }
 
+func TestTransaction_SetPersistent(t *testing.T) {
+	os.RemoveAll("test.db")
+	db, _ := OpenDB("test.db", true)
+
+	tx1 := db.Begin(true)
+	err := tx1.Set("1", "first")
+	assert.Nil(t, err)
+	r1, err := tx1.Get("1")
+	assert.Equal(t, "first", r1)
+
+	assert.Nil(t, db.Close())
+
+	fs, err := OpenFileStorage("test.db")
+	assert.Nil(t, err)
+
+	got := make([]dbItem, 0)
+	for item := range fs.Read() {
+		assert.Nil(t, item.err)
+		got = append(got, item.item.dbItem)
+	}
+
+	assert.Equal(t, []dbItem{
+		{key: "1", value: "first", createdTx: 1},
+	}, got)
+}
+
 func TestTransaction_SetAlreadyExists(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "first")
@@ -77,7 +104,7 @@ func TestTransaction_SetAlreadyExists(t *testing.T) {
 }
 
 func TestTransaction_Rollback(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "first")
@@ -91,7 +118,7 @@ func TestTransaction_Rollback(t *testing.T) {
 }
 
 func TestTransaction_Delete(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(false)
 	err := tx1.Set("1", "first")
@@ -114,7 +141,7 @@ func TestTransaction_Delete(t *testing.T) {
 }
 
 func TestTransaction_DeleteNonExistent(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Delete("1")
@@ -122,7 +149,7 @@ func TestTransaction_DeleteNonExistent(t *testing.T) {
 }
 
 func TestTransaction_Update(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "first")
@@ -151,7 +178,7 @@ func TestTransaction_Update(t *testing.T) {
 }
 
 func TestTransaction_AddIndex(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "abcde")
@@ -189,7 +216,7 @@ func TestTransaction_AddIndex(t *testing.T) {
 }
 
 func TestTransaction_IndexIsolation(t *testing.T) {
-	db := NewDB()
+	db, _ := OpenDB("", false)
 
 	tx1 := db.Begin(true)
 	err := tx1.Set("1", "abcde")

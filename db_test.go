@@ -5,13 +5,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"os"
 )
 
 func TestDB_Outdated(t *testing.T) {
-	db := NewDB()
+	db, err := OpenDB("", false)
+	require.Nil(t, err)
 
 	tx1 := db.Begin(true)
-	err := tx1.Set("1", "abcde")
+	err = tx1.Set("1", "abcde")
 	require.Nil(t, err)
 
 	err = tx1.Set("2", "ab")
@@ -64,4 +66,36 @@ func TestDB_Outdated(t *testing.T) {
 		got = append(got, value.value)
 	}
 	assert.Equal(t, []string{"ab", "aaaaaaaa"}, got)
+}
+
+func TestDB_FileImport(t *testing.T) {
+	path := "test.db"
+	os.RemoveAll(path)
+
+	fs, err := OpenFileStorage(path)
+	require.Nil(t, err)
+
+	err = fs.Write([]*dbItem{
+		{key: "FIRSTKEY", value: "FIRSTVALUE", createdTx: 1, deletedTx: 2},
+		{key: "FIRSTKEY", value: "SECONDVALUE", createdTx: 2, deletedTx: 3},
+		{key: "FIRSTKEY", value: "THIRDVALUE", createdTx: 3},
+	}...)
+	require.Nil(t, err)
+	err = fs.Close()
+	require.Nil(t, err)
+
+	db, err := OpenDB("test.db", true)
+	assert.Nil(t, err)
+
+	items := db.items.get("FIRSTKEY")
+	assert.Equal(t, []dbItem{
+		{key: "FIRSTKEY", value: "FIRSTVALUE", createdTx: 1, deletedTx: 2},
+		{key: "FIRSTKEY", value: "SECONDVALUE", createdTx: 2, deletedTx: 3},
+		{key: "FIRSTKEY", value: "THIRDVALUE", createdTx: 3},
+	}, items)
+
+	tx := db.Begin(false)
+	value, err := tx.Get("FIRSTKEY")
+	assert.Nil(t, err)
+	assert.Equal(t, "THIRDVALUE", value)
 }

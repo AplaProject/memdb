@@ -43,6 +43,11 @@ func (tx *Transaction) Set(key Key, value string) error {
 	item := &dbItem{key: key, createdTx: tx.id, createdOperation: operation, value: value}
 
 	tx.db.items.set(key, item)
+
+	if tx.db.persist {
+		tx.db.persistentStorage.Write(item)
+	}
+
 	tx.newIndexes.Insert(item)
 
 	return nil
@@ -84,6 +89,9 @@ func (tx *Transaction) Delete(key Key) error {
 	item.deletedOperation = operation
 
 	tx.db.items.set(key, &item)
+	if tx.db.persist {
+		tx.db.persistentStorage.Write(&item)
+	}
 
 	return nil
 }
@@ -107,10 +115,16 @@ func (tx *Transaction) Update(key Key, value string) error {
 	item.deletedTx = tx.id
 	item.deletedOperation = operation
 	tx.db.items.set(key, &item)
+	if tx.db.persist {
+		tx.db.persistentStorage.Write(&item)
+	}
 	tx.newIndexes.Remove(&item)
 
 	updItem := &dbItem{createdTx: tx.id, createdOperation: operation, value: value}
 	tx.db.items.set(key, updItem)
+	if tx.db.persist {
+		tx.db.persistentStorage.Write(updItem)
+	}
 	tx.newIndexes.Insert(updItem)
 
 	return nil
@@ -183,7 +197,7 @@ func (tx *Transaction) Commit() error {
 		tx.db.writeTx.Unlock()
 	}
 
-	tx.db.writers.set(tx.id, StatusDone)
+	tx.db.transactions.set(tx.id, StatusDone)
 	tx.db = nil
 
 	return nil
@@ -198,7 +212,7 @@ func (tx *Transaction) Rollback() error {
 		tx.newIndexes = nil
 	}
 
-	tx.db.writers.set(tx.id, StatusRollback)
+	tx.db.transactions.set(tx.id, StatusRollback)
 	tx.db = nil
 
 	return nil
@@ -227,11 +241,11 @@ func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbIt
 		}
 
 		if txID > item.deletedTx {
-			if tx.db.writers.get(item.deletedTx) == StatusDone {
+			if tx.db.transactions.get(item.deletedTx) == StatusDone {
 				return dbItem{}, ErrNotFound
 			}
 
-			if tx.db.writers.get(item.createdTx) == StatusDone {
+			if tx.db.transactions.get(item.createdTx) == StatusDone {
 				return item, nil
 			}
 

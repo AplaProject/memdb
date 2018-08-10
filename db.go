@@ -81,16 +81,66 @@ type Database struct {
 	items   Items
 	indexes *Indexes
 
-	writers txsStatus
-	lastTx  uint64
+	transactions txsStatus
+	lastTx       uint64
+
+	closed bool
+	persist           bool
+	persistentStorage *FileStorage
 }
 
-func NewDB() *Database {
-	return &Database{
-		items:   Items{storage: make(map[Key][]*dbItem)},
-		indexes: newIndexer(),
-		writers: txsStatus{txs: make(map[uint64]Status)},
+func OpenDB(path string, persist bool) (*Database, error) {
+	var err error
+	db := &Database{
+		items:        Items{storage: make(map[Key][]*dbItem)},
+		indexes:      newIndexer(),
+		transactions: txsStatus{txs: make(map[uint64]Status)},
 	}
+
+	if persist {
+		db.persist = true
+		db.persistentStorage, err = OpenFileStorage("test.db")
+		if err != nil {
+			return nil, err
+		}
+
+		rows := db.persistentStorage.Read()
+		for row := range rows {
+			if row.err != nil {
+				return nil, err
+			}
+
+			if row.item.command == CommandSET {
+				item := row.item.dbItem
+				db.items.set(row.item.key, &item)
+			}
+
+			// TODO command DEL (appearing after shrinking?)
+		}
+	}
+
+	db.transactions.set(2, StatusDone)
+
+	return db, nil
+}
+
+func (db *Database) Close() error {
+	if db.closed {
+		return nil
+	}
+
+	err := db.persistentStorage.Close()
+	if err != nil {
+		return err
+	}
+
+	db.closed = true
+
+	db.items = Items{storage: make(map[Key][]*dbItem)}
+	db.indexes = newIndexer()
+	db.transactions = txsStatus{ txs: make(map[uint64]Status)}
+
+	return nil
 }
 
 func (db *Database) Begin(writable bool) *Transaction {
@@ -111,7 +161,7 @@ func (db *Database) Begin(writable bool) *Transaction {
 		tx.newIndexes = db.indexes.Copy()
 	}
 
-	db.writers.set(txID, StatusRunning)
+	db.transactions.set(txID, StatusRunning)
 
 	return tx
 }
@@ -135,7 +185,7 @@ func (db *Database) cleanOutdated() {
 		return false
 	}
 
-	running := db.writers.running()
+	running := db.transactions.running()
 
 	db.items.mu.Lock()
 	for key, items := range db.items.storage {
