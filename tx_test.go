@@ -4,8 +4,6 @@ import (
 	"os"
 	"testing"
 
-	"fmt"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -85,7 +83,6 @@ func TestTransaction_SetPersistent(t *testing.T) {
 	got := make([]item, 0)
 	for item := range fs.read() {
 		assert.Nil(t, item.err)
-		fmt.Println(item.item)
 		got = append(got, item.item.item)
 	}
 
