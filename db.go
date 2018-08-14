@@ -1,39 +1,35 @@
 package memdb
 
 import (
-	"math"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/tidwall/btree"
 )
 
 type Key string
 
-type dbItem struct {
+type item struct {
 	key   Key
 	value string
-
-	createdTx uint64
-	deletedTx uint64
-
-	createdOperation uint64
-	deletedOperation uint64
 }
 
-func (i *dbItem) Less(item btree.Item, ctx interface{}) bool {
-	i2 := item.(*dbItem)
+type dbItem struct {
+	key            Key
+	current        *item
+	pending        *item
+	pendingDeleted bool
+	sync.RWMutex
+}
+
+func (i *item) Less(bitem btree.Item, ctx interface{}) bool {
+	i2 := bitem.(*item)
 	index, ok := ctx.(*Index)
 	if ok {
-		if index.sortFn != nil {
-			// Using an Index
-			if index.sortFn(i.value, i2.value) {
-				return true
-			}
-			if index.sortFn(i2.value, i.value) {
-				return false
-			}
+		if index.sortFn(i.value, i2.value) {
+			return true
+		}
+		if index.sortFn(i2.value, i.value) {
+			return false
 		}
 	}
 
@@ -42,25 +38,25 @@ func (i *dbItem) Less(item btree.Item, ctx interface{}) bool {
 
 type Items struct {
 	mu      sync.RWMutex
-	storage map[Key][]*dbItem
+	storage map[Key]*dbItem
 }
 
 func (it *Items) set(key Key, item *dbItem) {
 	it.mu.Lock()
-	it.storage[key] = append(it.storage[key], item)
+	it.storage[key] = item
 	it.mu.Unlock()
 }
 
-func (it *Items) get(key Key) []dbItem {
+func (it *Items) get(key Key) *dbItem {
 	it.mu.RLock()
 	defer it.mu.RUnlock()
+	return it.storage[key]
+}
 
-	itemsCopy := make([]dbItem, 0)
-	for _, item := range it.storage[key] {
-		itemsCopy = append(itemsCopy, *item)
-	}
-
-	return itemsCopy
+func (it *Items) remove(key Key) {
+	it.mu.Lock()
+	delete(it.storage, key)
+	it.mu.Unlock()
 }
 
 func (it *Items) keys() []Key {
@@ -81,45 +77,41 @@ type Database struct {
 	items   Items
 	indexes *Indexes
 
-	transactions txsStatus
-	lastTx       uint64
-
-	closed bool
+	closed            bool
 	persist           bool
-	persistentStorage *FileStorage
+	persistentStorage *fileStorage
 }
 
 func OpenDB(path string, persist bool) (*Database, error) {
-	var err error
 	db := &Database{
-		items:        Items{storage: make(map[Key][]*dbItem)},
-		indexes:      newIndexer(),
-		transactions: txsStatus{txs: make(map[uint64]Status)},
+		items:   Items{storage: make(map[Key]*dbItem)},
+		indexes: newIndexer(),
 	}
 
 	if persist {
+		var err error
 		db.persist = true
-		db.persistentStorage, err = OpenFileStorage("test.db")
+		db.persistentStorage, err = openFileStorage(path)
 		if err != nil {
 			return nil, err
 		}
 
-		rows := db.persistentStorage.Read()
-		for row := range rows {
-			if row.err != nil {
+		records := db.persistentStorage.read()
+		for record := range records {
+			if record.err != nil {
 				return nil, err
 			}
 
-			if row.item.command == CommandSET {
-				item := row.item.dbItem
-				db.items.set(row.item.key, &item)
+			if record.item.command == commandSET {
+				dbItem := &dbItem{key: record.item.key, current: &record.item.item}
+				db.items.set(dbItem.key, dbItem)
 			}
 
-			// TODO command DEL (appearing after shrinking?)
+			if record.item.command == commandDEL {
+				db.items.remove(record.item.key)
+			}
 		}
 	}
-
-	db.transactions.set(2, StatusDone)
 
 	return db, nil
 }
@@ -129,124 +121,29 @@ func (db *Database) Close() error {
 		return nil
 	}
 
-	err := db.persistentStorage.Close()
+	err := db.persistentStorage.close()
 	if err != nil {
 		return err
 	}
 
 	db.closed = true
-
-	db.items = Items{storage: make(map[Key][]*dbItem)}
+	db.items = Items{storage: make(map[Key]*dbItem)}
 	db.indexes = newIndexer()
-	db.transactions = txsStatus{ txs: make(map[uint64]Status)}
 
 	return nil
 }
 
 func (db *Database) Begin(writable bool) *Transaction {
-	txID := atomic.AddUint64(&db.lastTx, 1)
-
-	if txID == math.MaxUint64 {
-		panic("max tx counter reached")
-	}
-
 	tx := &Transaction{
-		id: txID,
 		db: db,
 	}
 
 	if writable {
 		db.writeTx.Lock()
 		tx.writable = true
+		tx.pendingItems = make(map[Key]struct{})
 		tx.newIndexes = db.indexes.Copy()
 	}
 
-	db.transactions.set(txID, StatusRunning)
-
 	return tx
-}
-
-func (db *Database) background() {
-	t := time.NewTicker(time.Minute * 5)
-
-	for range t.C {
-		db.cleanOutdated()
-	}
-}
-
-func (db *Database) cleanOutdated() {
-	in := func(need uint64, items []uint64) bool {
-		for _, item := range items {
-			if item == need {
-				return true
-			}
-		}
-
-		return false
-	}
-
-	running := db.transactions.running()
-
-	db.items.mu.Lock()
-	for key, items := range db.items.storage {
-		actual := make([]*dbItem, 0)
-
-		for _, item := range items {
-			if item.deletedTx == 0 {
-				actual = append(actual, item)
-				continue
-			}
-
-			if in(item.deletedTx, running) {
-				actual = append(actual, item)
-				continue
-			}
-		}
-
-		if len(actual) == len(items) {
-			continue
-		}
-
-		db.items.storage[key] = actual
-	}
-	db.items.mu.Unlock()
-}
-
-type Status int8
-
-const (
-	StatusUnknown Status = iota
-	StatusRunning
-	StatusDone
-	StatusRollback
-)
-
-// txsStatus is storing current writing transactions state
-type txsStatus struct {
-	txs map[uint64]Status
-	mu  sync.RWMutex
-}
-
-func (atx *txsStatus) get(tx uint64) Status {
-	atx.mu.RLock()
-	defer atx.mu.RUnlock()
-	return atx.txs[tx]
-}
-
-func (atx *txsStatus) set(tx uint64, status Status) {
-	atx.mu.Lock()
-	defer atx.mu.Unlock()
-	atx.txs[tx] = status
-}
-
-func (atx *txsStatus) running() []uint64 {
-	var running []uint64
-	atx.mu.RLock()
-	for id, status := range atx.txs {
-		if status == StatusRunning {
-			running = append(running, id)
-		}
-	}
-	atx.mu.RUnlock()
-	return running
 }

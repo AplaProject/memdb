@@ -1,7 +1,7 @@
 package memdb
 
 import (
-	"sync/atomic"
+	"sync"
 
 	"github.com/pkg/errors"
 	"github.com/tidwall/btree"
@@ -15,13 +15,12 @@ var (
 )
 
 type Transaction struct {
-	id        uint64
-	writable  bool
-	operation uint64
+	writable bool
 
-	newIndexes *Indexes
-
-	db *Database
+	db           *Database
+	newIndexes   *Indexes
+	pendingItems map[Key]struct{}
+	mu           sync.RWMutex
 }
 
 func (tx *Transaction) Set(key Key, value string) error {
@@ -33,22 +32,17 @@ func (tx *Transaction) Set(key Key, value string) error {
 		return ErrTxNotWritable
 	}
 
-	operation := atomic.AddUint64(&tx.operation, 1)
-
-	_, err := tx.getLastKeyRevision(key, operation, tx.id)
+	_, err := tx.getKey(key)
 	if err != ErrNotFound {
 		return ErrAlreadyExists
 	}
 
-	item := &dbItem{key: key, createdTx: tx.id, createdOperation: operation, value: value}
+	tx.mu.Lock()
+	new := &item{key: key, value: value}
+	tx.createItem(new)
+	tx.mu.Unlock()
 
-	tx.db.items.set(key, item)
-
-	if tx.db.persist {
-		tx.db.persistentStorage.Write(item)
-	}
-
-	tx.newIndexes.Insert(item)
+	tx.newIndexes.Insert(new)
 
 	return nil
 }
@@ -57,9 +51,8 @@ func (tx *Transaction) Get(key Key) (string, error) {
 	if tx.db == nil {
 		return "", ErrTxClosed
 	}
-	operation := atomic.AddUint64(&tx.operation, 1)
 
-	item, err := tx.getLastKeyRevision(key, operation, tx.id)
+	item, err := tx.getKey(key)
 	if err != nil {
 		return "", err
 	}
@@ -76,27 +69,23 @@ func (tx *Transaction) Delete(key Key) error {
 		return ErrTxNotWritable
 	}
 
-	operation := atomic.AddUint64(&tx.operation, 1)
-
-	item, err := tx.getLastKeyRevision(key, operation, tx.id)
+	item, err := tx.getKey(key)
 	if err != nil {
 		return err
 	}
 
+	tx.mu.Lock()
+	tx.updateItem(key, nil, true)
 	tx.newIndexes.Remove(&item)
-
-	item.deletedTx = tx.id
-	item.deletedOperation = operation
-
-	tx.db.items.set(key, &item)
-	if tx.db.persist {
-		tx.db.persistentStorage.Write(&item)
-	}
+	tx.mu.Unlock()
 
 	return nil
 }
 
 func (tx *Transaction) Update(key Key, value string) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -105,32 +94,22 @@ func (tx *Transaction) Update(key Key, value string) error {
 		return ErrTxNotWritable
 	}
 
-	operation := atomic.AddUint64(&tx.operation, 1)
-
-	item, err := tx.getLastKeyRevision(key, operation, tx.id)
+	_, err := tx.getKey(key)
 	if err != nil {
 		return err
 	}
 
-	item.deletedTx = tx.id
-	item.deletedOperation = operation
-	tx.db.items.set(key, &item)
-	if tx.db.persist {
-		tx.db.persistentStorage.Write(&item)
-	}
-	tx.newIndexes.Remove(&item)
-
-	updItem := &dbItem{createdTx: tx.id, createdOperation: operation, value: value}
-	tx.db.items.set(key, updItem)
-	if tx.db.persist {
-		tx.db.persistentStorage.Write(updItem)
-	}
-	tx.newIndexes.Insert(updItem)
+	update := &item{key: key, value: value}
+	tx.updateItem(key, update, false)
+	tx.newIndexes.Insert(update)
 
 	return nil
 }
 
 func (tx *Transaction) AddIndex(index *Index) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -138,8 +117,6 @@ func (tx *Transaction) AddIndex(index *Index) error {
 	if !tx.writable {
 		return ErrTxNotWritable
 	}
-
-	operation := atomic.AddUint64(&tx.operation, 1)
 
 	err := tx.newIndexes.AddIndex(index)
 	if err != nil {
@@ -147,7 +124,7 @@ func (tx *Transaction) AddIndex(index *Index) error {
 	}
 
 	for _, key := range tx.db.items.keys() {
-		revision, err := tx.getLastKeyRevision(key, operation, tx.id)
+		revision, err := tx.getKey(key)
 		if err != nil {
 			tx.newIndexes.RemoveIndex(index.name)
 			return err
@@ -160,6 +137,9 @@ func (tx *Transaction) AddIndex(index *Index) error {
 }
 
 func (tx *Transaction) Ascend(index string, iterator func(key Key, value string) bool) error {
+	tx.mu.RLock()
+	defer tx.mu.RUnlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -178,80 +158,127 @@ func (tx *Transaction) Ascend(index string, iterator func(key Key, value string)
 		return ErrUnknownIndex
 	}
 
-	var item *dbItem
-	i.tree.Ascend(func(i btree.Item) bool {
-		item = i.(*dbItem)
-		return iterator(item.key, item.value)
+	var curitem *item
+	i.tree.Ascend(func(bitem btree.Item) bool {
+		curitem = bitem.(*item)
+		return iterator(curitem.key, curitem.value)
 	})
 
 	return nil
 }
 
 func (tx *Transaction) Commit() error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
 
-	if tx.writable {
-		tx.db.indexes = tx.newIndexes
-		tx.db.writeTx.Unlock()
-	}
-
-	tx.db.transactions.set(tx.id, StatusDone)
+	db := tx.db
 	tx.db = nil
+
+	if tx.writable {
+		save := make([]fileItem, 0)
+
+		for key := range tx.pendingItems {
+			dbItem := db.items.get(key)
+			dbItem.Lock()
+
+			if dbItem.pendingDeleted {
+				if dbItem.current != nil {
+					save = append(save, fileItem{item: item{key: key}, command: commandDEL})
+				}
+				dbItem.Unlock()
+				db.items.remove(key)
+				continue
+			}
+
+			// Delete old record
+			if dbItem.current != nil {
+				save = append(save, fileItem{item: item{key: key}, command: commandDEL})
+			}
+
+			save = append(save, fileItem{item: item{key: key, value: dbItem.pending.value}, command: commandSET})
+			dbItem.current = dbItem.pending
+			dbItem.pending = nil
+			dbItem.Unlock()
+		}
+
+		tx.pendingItems = nil
+		db.indexes = tx.newIndexes
+
+		// Write to disk
+		if db.persist {
+			err := db.persistentStorage.write(save...)
+			if err != nil {
+				return err
+			}
+		}
+
+		db.writeTx.Unlock()
+	}
 
 	return nil
 }
 
 func (tx *Transaction) Rollback() error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
 
+	db := tx.db
+
 	if tx.writable {
 		tx.newIndexes = nil
+		tx.pendingItems = nil
+		db.writeTx.Unlock()
 	}
-
-	tx.db.transactions.set(tx.id, StatusRollback)
-	tx.db = nil
 
 	return nil
 }
 
-func (tx *Transaction) getLastKeyRevision(key Key, operation, txID uint64) (dbItem, error) {
-	items := tx.db.items.get(key)
-	var item dbItem
-	for l := len(items) - 1; l >= 0; l-- {
-		item = items[l]
+func (tx *Transaction) getKey(key Key) (item, error) {
+	dbItem := tx.db.items.get(key)
 
-		if txID == item.deletedTx {
-			if operation > item.deletedOperation {
-				return dbItem{}, ErrNotFound
-			}
-
-			return item, nil
-		}
-
-		if txID == item.createdTx {
-			if operation > item.createdOperation {
-				return item, nil
-			}
-
-			continue
-		}
-
-		if txID > item.deletedTx {
-			if tx.db.transactions.get(item.deletedTx) == StatusDone {
-				return dbItem{}, ErrNotFound
-			}
-
-			if tx.db.transactions.get(item.createdTx) == StatusDone {
-				return item, nil
-			}
-
-			continue
-		}
+	if dbItem == nil {
+		return item{}, ErrNotFound
 	}
 
-	return dbItem{}, ErrNotFound
+	dbItem.RLock()
+	defer dbItem.RUnlock()
+
+	// Item doesn't created "yet"
+	if !tx.writable && dbItem.current == nil || (tx.writable && dbItem.pendingDeleted) {
+		return item{}, ErrNotFound
+	}
+
+	// Item was already updated at this transaction
+	if tx.writable && !dbItem.pendingDeleted && dbItem.pending != nil {
+		return *dbItem.pending, nil
+	}
+
+	return *dbItem.current, nil
+}
+
+func (tx *Transaction) createItem(item *item) {
+	dbItem := &dbItem{key: item.key, pending: item}
+
+	dbItem.Lock()
+	tx.db.items.set(item.key, dbItem)
+	tx.pendingItems[dbItem.key] = struct{}{}
+	dbItem.Unlock()
+}
+
+func (tx *Transaction) updateItem(key Key, new *item, deleted bool) {
+	dbItem := tx.db.items.get(key)
+
+	dbItem.Lock()
+	dbItem.pendingDeleted = deleted
+	dbItem.pending = new
+	tx.pendingItems[key] = struct{}{}
+	dbItem.Unlock()
 }

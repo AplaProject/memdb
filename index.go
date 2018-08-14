@@ -2,7 +2,6 @@ package memdb
 
 import (
 	"errors"
-	"sync"
 
 	"github.com/tidwall/btree"
 	"github.com/tidwall/match"
@@ -40,8 +39,8 @@ func (idx *Index) remove(item btree.Item) {
 	idx.tree.Delete(item)
 }
 
+// Indexes is not thread-safe
 type Indexes struct {
-	mu      sync.RWMutex
 	storage map[string]*Index
 }
 
@@ -60,9 +59,7 @@ func (idxer *Indexes) AddIndex(index *Index) error {
 		return ErrIndexExists
 	}
 
-	idxer.mu.Lock()
 	idxer.storage[index.name] = index
-	idxer.mu.Unlock()
 
 	return nil
 }
@@ -72,17 +69,12 @@ func (idxer *Indexes) RemoveIndex(name string) error {
 		return ErrEmptyIndex
 	}
 
-	idxer.mu.Lock()
 	delete(idxer.storage, name)
-	idxer.mu.Unlock()
 
 	return nil
 }
 
 func (idxer *Indexes) GetIndex(name string) *Index {
-	idxer.mu.RLock()
-	defer idxer.mu.RUnlock()
-
 	for indexName, index := range idxer.storage {
 		if name == indexName {
 			return index
@@ -92,24 +84,21 @@ func (idxer *Indexes) GetIndex(name string) *Index {
 	return nil
 }
 
-func (idxer *Indexes) Insert(item *dbItem, to ...string) {
-	idxer.mu.Lock()
+// TODO rename to ReplaceOrInsert
+func (idxer *Indexes) Insert(item *item, to ...string) {
 	for _, index := range idxer.storage {
 		if idxer.fit(index.name, to) && match.Match(string(item.key), index.pattern) {
 			index.insert(item)
 		}
 	}
-	idxer.mu.Unlock()
 }
 
-func (idxer *Indexes) Remove(item *dbItem, from ...string) {
-	idxer.mu.Lock()
+func (idxer *Indexes) Remove(item *item, from ...string) {
 	for _, index := range idxer.storage {
 		if idxer.fit(index.name, from) && match.Match(string(item.key), index.pattern) {
 			index.remove(item)
 		}
 	}
-	idxer.mu.Unlock()
 }
 
 func (idxer *Indexes) fit(current string, indexes []string) bool {
@@ -129,7 +118,6 @@ func (idxer *Indexes) fit(current string, indexes []string) bool {
 func (idxer *Indexes) Copy() *Indexes {
 	newIndexer := newIndexer()
 
-	idxer.mu.RLock()
 	for _, oldIdx := range idxer.storage {
 		newIdx := NewIndex(oldIdx.name, oldIdx.pattern, oldIdx.sortFn)
 		newIdx.tree = oldIdx.tree.Clone()
@@ -139,7 +127,6 @@ func (idxer *Indexes) Copy() *Indexes {
 			panic(err)
 		}
 	}
-	idxer.mu.RUnlock()
 
 	return newIndexer
 }
