@@ -1,11 +1,11 @@
 package memdb
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"os"
 )
 
 func TestTransaction_Isolation(t *testing.T) {
@@ -39,7 +39,6 @@ func TestTransaction_Isolation(t *testing.T) {
 	r3, err := tx3.Get("1")
 	assert.Equal(t, ErrNotFound, err)
 	assert.Equal(t, "", r3)
-
 }
 
 func TestTransaction_Set(t *testing.T) {
@@ -75,21 +74,21 @@ func TestTransaction_SetPersistent(t *testing.T) {
 	assert.Nil(t, err)
 	r1, err := tx1.Get("1")
 	assert.Equal(t, "first", r1)
-
+	assert.Nil(t, tx1.Commit())
 	assert.Nil(t, db.Close())
 
-	fs, err := OpenFileStorage("test.db")
+	fs, err := openFileStorage("test.db")
 	assert.Nil(t, err)
 
-	got := make([]dbItem, 0)
-	for item := range fs.Read() {
+	got := make([]item, 0)
+	for item := range fs.read() {
 		assert.Nil(t, item.err)
-		got = append(got, item.item.dbItem)
+		got = append(got, item.item.item)
 	}
 
-	assert.Equal(t, []dbItem{
-		{key: "1", value: "first", createdTx: 1},
-	}, got)
+	assert.Len(t, got, 1)
+	assert.Equal(t, "first", got[0].value)
+	assert.Equal(t, Key("1"), got[0].key)
 }
 
 func TestTransaction_SetAlreadyExists(t *testing.T) {

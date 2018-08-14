@@ -5,32 +5,33 @@ import (
 
 	"io"
 
+	"fmt"
+
 	"github.com/pkg/errors"
 	"github.com/tidwall/resp"
-	"strconv"
 )
 
 var ErrOpenFile = errors.New("opening file")
 
-type FileStorage struct {
+type fileStorage struct {
 	file *os.File
 }
 
-type Command int8
+type command int8
 
 const (
-	CommandSET Command = iota
-	CommandDEL
+	commandSET command = iota
+	commandDEL
 )
 
-type rowItem struct {
-	dbItem
-	command Command
+type fileItem struct {
+	item
+	command command
 }
 
-func OpenFileStorage(path string) (*FileStorage, error) {
+func openFileStorage(path string) (*fileStorage, error) {
 	var err error
-	fs := &FileStorage{}
+	fs := &fileStorage{}
 
 	fs.file, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
@@ -40,19 +41,19 @@ func OpenFileStorage(path string) (*FileStorage, error) {
 	return fs, nil
 }
 
-type ReadResult struct {
-	item rowItem
+type readResult struct {
+	item fileItem
 	err  error
 }
 
-func (fs *FileStorage) Read() chan ReadResult {
-	results := make(chan ReadResult)
+func (fs *fileStorage) read() chan readResult {
+	results := make(chan readResult)
 
 	go func() {
 		rd := resp.NewReader(fs.file)
 
 		for {
-			result := ReadResult{}
+			result := readResult{}
 			v, _, err := rd.ReadValue()
 			if err == io.EOF {
 				break
@@ -63,34 +64,22 @@ func (fs *FileStorage) Read() chan ReadResult {
 			}
 
 			if v.Type() == resp.Array {
-				for _, v := range v.Array() {
-					for i, v := range v.Array() {
-						switch i {
-						case 0:
-							command := v.String()
-							if command == "set" {
-								result.item.command = CommandSET
-							} else if command == "del" {
-								result.item.command = CommandDEL
-							}
-						case 1:
-							result.item.key = Key(v.String())
-						case 2:
-							result.item.value = v.String()
-						case 3:
-							result.item.createdTx, err = strconv.ParseUint(v.String(), 10, 64)
-							if err != nil {
-								result.err = err
-							}
-						case 4:
-							result.item.deletedTx, err = strconv.ParseUint(v.String(), 10, 64)
-							if err != nil {
-								result.err = err
-							}
+				for i, v := range v.Array() {
+					switch i {
+					case 0:
+						command := v.String()
+						if command == "set" {
+							result.item.command = commandSET
+						} else if command == "del" {
+							result.item.command = commandDEL
 						}
+					case 1:
+						result.item.key = Key(v.String())
+					case 2:
+						result.item.value = v.String()
 					}
-					results <- result
 				}
+				results <- result
 			}
 		}
 
@@ -100,17 +89,28 @@ func (fs *FileStorage) Read() chan ReadResult {
 	return results
 }
 
-func (fs *FileStorage) Write(items ...*dbItem) error {
-	values := make([]resp.Value, 0)
-	for _, item := range items {
-		values = append(values, resp.MultiBulkValue("set", string(item.key), item.value, item.createdTx, item.deletedTx))
-	}
-
+func (fs *fileStorage) write(items ...fileItem) error {
 	writer := resp.NewWriter(fs.file)
 
-	return writer.WriteArray(values)
+	for _, item := range items {
+		row := make([]resp.Value, 0)
+
+		if item.command == commandSET {
+			row = append(row, resp.StringValue("set"), resp.StringValue(string(item.key)), resp.StringValue(item.value))
+		} else if item.command == commandDEL {
+			row = append(row, resp.StringValue("del"), resp.StringValue(string(item.key)))
+		} else {
+			panic(fmt.Sprintf("unknwon command %d", item.command))
+		}
+
+		if err := writer.WriteArray(row); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
-func (fs *FileStorage) Close() error {
+func (fs *fileStorage) close() error {
 	return fs.file.Close()
 }
