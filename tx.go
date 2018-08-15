@@ -24,6 +24,9 @@ type Transaction struct {
 }
 
 func (tx *Transaction) Set(key Key, value string) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -37,11 +40,8 @@ func (tx *Transaction) Set(key Key, value string) error {
 		return ErrAlreadyExists
 	}
 
-	tx.mu.Lock()
 	new := &item{key: key, value: value}
 	tx.createItem(new)
-	tx.mu.Unlock()
-
 	tx.newIndexes.Insert(new)
 
 	return nil
@@ -61,6 +61,9 @@ func (tx *Transaction) Get(key Key) (string, error) {
 }
 
 func (tx *Transaction) Delete(key Key) error {
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+
 	if tx.db == nil {
 		return ErrTxClosed
 	}
@@ -74,10 +77,8 @@ func (tx *Transaction) Delete(key Key) error {
 		return err
 	}
 
-	tx.mu.Lock()
 	tx.updateItem(key, nil, true)
 	tx.newIndexes.Remove(&item)
-	tx.mu.Unlock()
 
 	return nil
 }

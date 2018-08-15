@@ -1,11 +1,9 @@
 package memdb
 
 import (
-	"os"
-
-	"io"
-
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/pkg/errors"
 	"github.com/tidwall/resp"
