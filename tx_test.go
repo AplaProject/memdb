@@ -88,7 +88,7 @@ func TestTransaction_SetPersistent(t *testing.T) {
 
 	assert.Len(t, got, 1)
 	assert.Equal(t, "first", got[0].value)
-	assert.Equal(t, Key("1"), got[0].key)
+	assert.Equal(t, dbKey("1"), got[0].key)
 }
 
 func TestTransaction_SetAlreadyExists(t *testing.T) {
@@ -191,7 +191,7 @@ func TestTransaction_AddIndex(t *testing.T) {
 	err = tx1.Set("5", "abcd")
 	require.Nil(t, err)
 
-	assert.Error(t, tx1.Ascend("test-len", func(key Key, value string) bool {
+	assert.Error(t, tx1.Ascend("test-len", func(key, value string) bool {
 		return true
 	}))
 
@@ -200,16 +200,16 @@ func TestTransaction_AddIndex(t *testing.T) {
 	}))
 	require.Nil(t, err)
 
-	got := make([]Key, 0)
-	assert.Nil(t, tx1.Ascend("test-len", func(key Key, value string) bool {
+	got := make([]string, 0)
+	assert.Nil(t, tx1.Ascend("test-len", func(key, value string) bool {
 		got = append(got, key)
 		return true
 	}))
 
-	assert.Equal(t, []Key{"4", "2", "3", "5", "1"}, got)
+	assert.Equal(t, []string{"4", "2", "3", "5", "1"}, got)
 
 	tx2 := db.Begin(false)
-	assert.Error(t, tx2.Ascend("test-len", func(key Key, value string) bool {
+	assert.Error(t, tx2.Ascend("test-len", func(key, value string) bool {
 		return true
 	}))
 }
@@ -229,7 +229,7 @@ func TestTransaction_IndexIsolation(t *testing.T) {
 	err = tx1.Set("5", "abcd")
 	require.Nil(t, err)
 
-	assert.Error(t, tx1.Ascend("test-len", func(key Key, value string) bool {
+	assert.Error(t, tx1.Ascend("test-len", func(key, value string) bool {
 		return true
 	}))
 
@@ -242,48 +242,48 @@ func TestTransaction_IndexIsolation(t *testing.T) {
 	tx2 := db.Begin(false)
 	tx1 = db.Begin(true)
 
-	got1 := make([]Key, 0)
-	assert.Nil(t, tx1.Ascend("test-len", func(key Key, value string) bool {
+	got1 := make([]string, 0)
+	assert.Nil(t, tx1.Ascend("test-len", func(key, value string) bool {
 		got1 = append(got1, key)
 		return true
 	}))
 
-	assert.Equal(t, []Key{"4", "2", "3", "5", "1"}, got1)
+	assert.Equal(t, []string{"4", "2", "3", "5", "1"}, got1)
 
-	got2 := make([]Key, 0)
-	assert.Nil(t, tx2.Ascend("test-len", func(key Key, value string) bool {
+	got2 := make([]string, 0)
+	assert.Nil(t, tx2.Ascend("test-len", func(key, value string) bool {
 		got2 = append(got2, key)
 		return true
 	}))
 
-	assert.Equal(t, []Key{"4", "2", "3", "5", "1"}, got2)
+	assert.Equal(t, []string{"4", "2", "3", "5", "1"}, got2)
 
 	err = tx1.Set("6", "abcdef")
 	require.Nil(t, err)
 
-	got1 = make([]Key, 0)
-	assert.Nil(t, tx1.Ascend("test-len", func(key Key, value string) bool {
+	got1 = make([]string, 0)
+	assert.Nil(t, tx1.Ascend("test-len", func(key, value string) bool {
 		got1 = append(got1, key)
 		return true
 	}))
 
-	assert.Equal(t, []Key{"4", "2", "3", "5", "1", "6"}, got1)
+	assert.Equal(t, []string{"4", "2", "3", "5", "1", "6"}, got1)
 
-	got2 = make([]Key, 0)
-	assert.Nil(t, tx2.Ascend("test-len", func(key Key, value string) bool {
+	got2 = make([]string, 0)
+	assert.Nil(t, tx2.Ascend("test-len", func(key, value string) bool {
 		got2 = append(got2, key)
 		return true
 	}))
 
-	assert.Equal(t, []Key{"4", "2", "3", "5", "1"}, got2)
+	assert.Equal(t, []string{"4", "2", "3", "5", "1"}, got2)
 
 	tx1.Commit()
 
-	got2 = make([]Key, 0)
-	assert.Nil(t, tx2.Ascend("test-len", func(key Key, value string) bool {
+	got2 = make([]string, 0)
+	assert.Nil(t, tx2.Ascend("test-len", func(key, value string) bool {
 		got2 = append(got2, key)
 		return true
 	}))
 
-	assert.Equal(t, []Key{"4", "2", "3", "5", "1", "6"}, got2)
+	assert.Equal(t, []string{"4", "2", "3", "5", "1", "6"}, got2)
 }

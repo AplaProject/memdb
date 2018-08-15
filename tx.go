@@ -19,11 +19,12 @@ type Transaction struct {
 
 	db           *Database
 	newIndexes   *Indexes
-	pendingItems map[Key]struct{}
+	pendingItems map[dbKey]struct{}
 	mu           sync.RWMutex
 }
 
-func (tx *Transaction) Set(key Key, value string) error {
+func (tx *Transaction) Set(key, value string) error {
+	k := dbKey(key)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -35,24 +36,24 @@ func (tx *Transaction) Set(key Key, value string) error {
 		return ErrTxNotWritable
 	}
 
-	_, err := tx.getKey(key)
+	_, err := tx.getKey(k)
 	if err != ErrNotFound {
 		return ErrAlreadyExists
 	}
 
-	new := &item{key: key, value: value}
+	new := &item{key: k, value: value}
 	tx.createItem(new)
 	tx.newIndexes.Insert(new)
 
 	return nil
 }
 
-func (tx *Transaction) Get(key Key) (string, error) {
+func (tx *Transaction) Get(key string) (string, error) {
 	if tx.db == nil {
 		return "", ErrTxClosed
 	}
 
-	item, err := tx.getKey(key)
+	item, err := tx.getKey(dbKey(key))
 	if err != nil {
 		return "", err
 	}
@@ -60,7 +61,8 @@ func (tx *Transaction) Get(key Key) (string, error) {
 	return item.value, nil
 }
 
-func (tx *Transaction) Delete(key Key) error {
+func (tx *Transaction) Delete(key string) error {
+	k := dbKey(key)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -72,18 +74,19 @@ func (tx *Transaction) Delete(key Key) error {
 		return ErrTxNotWritable
 	}
 
-	item, err := tx.getKey(key)
+	item, err := tx.getKey(k)
 	if err != nil {
 		return err
 	}
 
-	tx.updateItem(key, nil, true)
+	tx.updateItem(k, nil, true)
 	tx.newIndexes.Remove(&item)
 
 	return nil
 }
 
-func (tx *Transaction) Update(key Key, value string) error {
+func (tx *Transaction) Update(key, value string) error {
+	k := dbKey(key)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -95,13 +98,13 @@ func (tx *Transaction) Update(key Key, value string) error {
 		return ErrTxNotWritable
 	}
 
-	_, err := tx.getKey(key)
+	_, err := tx.getKey(k)
 	if err != nil {
 		return err
 	}
 
-	update := &item{key: key, value: value}
-	tx.updateItem(key, update, false)
+	update := &item{key: k, value: value}
+	tx.updateItem(k, update, false)
 	tx.newIndexes.Insert(update)
 
 	return nil
@@ -137,7 +140,7 @@ func (tx *Transaction) AddIndex(index *Index) error {
 	return nil
 }
 
-func (tx *Transaction) Ascend(index string, iterator func(key Key, value string) bool) error {
+func (tx *Transaction) Ascend(index string, iterator func(key, value string) bool) error {
 	tx.mu.RLock()
 	defer tx.mu.RUnlock()
 
@@ -162,7 +165,7 @@ func (tx *Transaction) Ascend(index string, iterator func(key Key, value string)
 	var curitem *item
 	i.tree.Ascend(func(bitem btree.Item) bool {
 		curitem = bitem.(*item)
-		return iterator(curitem.key, curitem.value)
+		return iterator(string(curitem.key), curitem.value)
 	})
 
 	return nil
@@ -242,7 +245,7 @@ func (tx *Transaction) Rollback() error {
 	return nil
 }
 
-func (tx *Transaction) getKey(key Key) (item, error) {
+func (tx *Transaction) getKey(key dbKey) (item, error) {
 	dbItem := tx.db.items.get(key)
 
 	if dbItem == nil {
@@ -274,7 +277,7 @@ func (tx *Transaction) createItem(item *item) {
 	dbItem.Unlock()
 }
 
-func (tx *Transaction) updateItem(key Key, new *item, deleted bool) {
+func (tx *Transaction) updateItem(key dbKey, new *item, deleted bool) {
 	dbItem := tx.db.items.get(key)
 
 	dbItem.Lock()

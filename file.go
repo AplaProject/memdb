@@ -72,7 +72,7 @@ func (fs *fileStorage) read() chan readResult {
 							result.item.command = commandDEL
 						}
 					case 1:
-						result.item.key = Key(v.String())
+						result.item.key = dbKey(v.String())
 					case 2:
 						result.item.value = v.String()
 					}

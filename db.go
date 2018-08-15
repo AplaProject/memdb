@@ -6,15 +6,15 @@ import (
 	"github.com/tidwall/btree"
 )
 
-type Key string
+type dbKey string
 
 type item struct {
-	key   Key
+	key   dbKey
 	value string
 }
 
 type dbItem struct {
-	key            Key
+	key            dbKey
 	current        *item
 	pending        *item
 	pendingDeleted bool
@@ -38,29 +38,29 @@ func (i *item) Less(bitem btree.Item, ctx interface{}) bool {
 
 type Items struct {
 	mu      sync.RWMutex
-	storage map[Key]*dbItem
+	storage map[dbKey]*dbItem
 }
 
-func (it *Items) set(key Key, item *dbItem) {
+func (it *Items) set(key dbKey, item *dbItem) {
 	it.mu.Lock()
 	it.storage[key] = item
 	it.mu.Unlock()
 }
 
-func (it *Items) get(key Key) *dbItem {
+func (it *Items) get(key dbKey) *dbItem {
 	it.mu.RLock()
 	defer it.mu.RUnlock()
 	return it.storage[key]
 }
 
-func (it *Items) remove(key Key) {
+func (it *Items) remove(key dbKey) {
 	it.mu.Lock()
 	delete(it.storage, key)
 	it.mu.Unlock()
 }
 
-func (it *Items) keys() []Key {
-	keys := make([]Key, 0)
+func (it *Items) keys() []dbKey {
+	keys := make([]dbKey, 0)
 
 	it.mu.RLock()
 	for key := range it.storage {
@@ -84,7 +84,7 @@ type Database struct {
 
 func OpenDB(path string, persist bool) (*Database, error) {
 	db := &Database{
-		items:   Items{storage: make(map[Key]*dbItem)},
+		items:   Items{storage: make(map[dbKey]*dbItem)},
 		indexes: newIndexer(),
 	}
 
@@ -127,7 +127,7 @@ func (db *Database) Close() error {
 	}
 
 	db.closed = true
-	db.items = Items{storage: make(map[Key]*dbItem)}
+	db.items = Items{storage: make(map[dbKey]*dbItem)}
 	db.indexes = newIndexer()
 
 	return nil
@@ -141,7 +141,7 @@ func (db *Database) Begin(writable bool) *Transaction {
 	if writable {
 		db.writeTx.Lock()
 		tx.writable = true
-		tx.pendingItems = make(map[Key]struct{})
+		tx.pendingItems = make(map[dbKey]struct{})
 		tx.newIndexes = db.indexes.Copy()
 	}
 
