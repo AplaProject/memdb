@@ -85,29 +85,29 @@ func (tx *Transaction) Delete(key string) error {
 	return nil
 }
 
-func (tx *Transaction) Update(key, value string) error {
+func (tx *Transaction) Update(key, value string) (string, error) {
 	k := dbKey(key)
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
 	if tx.db == nil {
-		return ErrTxClosed
+		return "", ErrTxClosed
 	}
 
 	if !tx.writable {
-		return ErrTxNotWritable
+		return "", ErrTxNotWritable
 	}
 
-	_, err := tx.getKey(k)
+	old, err := tx.getKey(k)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	update := &item{key: k, value: value}
 	tx.updateItem(k, update, false)
 	tx.newIndexes.Insert(update)
 
-	return nil
+	return old.value, nil
 }
 
 func (tx *Transaction) AddIndex(index *Index) error {
