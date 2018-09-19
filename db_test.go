@@ -2,6 +2,7 @@ package memdb
 
 import (
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,4 +36,24 @@ func TestDB_FileImport(t *testing.T) {
 	value, err := tx.Get("FIRSTKEY")
 	assert.Nil(t, err)
 	assert.Equal(t, "THIRDVALUE", value)
+}
+
+func BenchmarkDatabaseSet(b *testing.B) {
+	b.ReportAllocs()
+	require.Nil(b, os.RemoveAll("bench.db"))
+	db, err := OpenDB("bench.db", false)
+	require.Nil(b, err)
+
+	b.ResetTimer()
+	tx := db.Begin(true)
+	for n := 0; n < b.N; n++ {
+		err = tx.Set(strconv.FormatInt(int64(n), 10), "somevalue")
+		if err != nil {
+			require.Nil(b, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		require.Nil(b, err)
+	}
 }
