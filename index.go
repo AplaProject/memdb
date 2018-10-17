@@ -22,12 +22,31 @@ type Index struct {
 	sortFn  func(a, b string) bool
 }
 
-func NewIndex(name, pattern string, sortFn func(a, b string) bool) *Index {
+func NewIndex(name, pattern string, sortFns ...func(a, b string) bool) *Index {
 	i := new(Index)
 	i.tree = btree.New(btreeDegrees, i)
 	i.pattern = pattern
 	i.name = name
-	i.sortFn = sortFn
+
+	switch len(sortFns) {
+	case 0:
+	case 1:
+		i.sortFn = sortFns[0]
+	default:
+		i.sortFn = func(a, b string) bool {
+			for _, f := range sortFns {
+				if f(a, b) {
+					return true
+				}
+
+				if f(b, a) {
+					return false
+				}
+			}
+			return sortFns[len(sortFns)-1](a, b)
+		}
+	}
+
 	return i
 }
 
@@ -123,7 +142,7 @@ func (idxer *Indexes) Copy() *Indexes {
 	newIndexer := newIndexer()
 
 	for _, oldIdx := range idxer.storage {
-		newIdx := NewIndex(oldIdx.name, oldIdx.pattern, oldIdx.sortFn)
+		newIdx := &Index{name: oldIdx.name, pattern: oldIdx.pattern, sortFn: oldIdx.sortFn}
 		newIdx.tree = oldIdx.tree.Clone()
 
 		err := newIndexer.AddIndex(newIdx)

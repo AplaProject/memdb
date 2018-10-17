@@ -1,11 +1,13 @@
 package memdb
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/btree"
+	"github.com/tidwall/buntdb"
 )
 
 func TestIndex_Insert(t *testing.T) {
@@ -96,4 +98,35 @@ func TestIndex_Copy(t *testing.T) {
 
 	assert.Equal(t, []string{"sec", "first"}, store1)
 	assert.Equal(t, []string{"sec", "first", "third"}, store2)
+}
+
+func TestIndex_MultipleIndex(t *testing.T) {
+	indexer := newIndexer()
+	indexer.AddIndex(NewIndex("multiple", "*", buntdb.IndexJSON("name.last"), buntdb.IndexJSON("age")))
+
+	cases := []string{
+		`{"name":{"first":"Tom","last":"Johnson"},"age":38}`,
+		`{"name":{"first":"Janet","last":"Prichard"},"age":47}`,
+		`{"name":{"first":"Carol","last":"Anderson"},"age":52}`,
+		`{"name":{"first":"Alan","last":"Cooper"},"age":28}`,
+		`{"name":{"first":"Sam","last":"Anderson"},"age":51}`,
+		`{"name":{"first":"Melinda","last":"Prichard"},"age":44}`,
+	}
+
+	for key, c := range cases {
+		indexer.Insert(&item{
+			key:   dbKey(strconv.FormatInt(int64(key), 10)),
+			value: c,
+		})
+	}
+
+	got := make([]string, 0)
+	indexer.storage["multiple"].tree.Ascend(func(i btree.Item) bool {
+		got = append(got, i.(*item).value)
+		return true
+	})
+
+	require.Equal(t, []string{
+		cases[4], cases[2], cases[3], cases[0], cases[5], cases[1],
+	}, got)
 }
