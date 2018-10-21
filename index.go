@@ -22,31 +22,12 @@ type Index struct {
 	sortFn  func(a, b string) bool
 }
 
-func NewIndex(name, pattern string, sortFns ...func(a, b string) bool) *Index {
+func NewIndex(name, pattern string, sortFn func(a, b string) bool) *Index {
 	i := new(Index)
 	i.tree = btree.New(btreeDegrees, i)
 	i.pattern = pattern
 	i.name = name
-
-	switch len(sortFns) {
-	case 0:
-	case 1:
-		i.sortFn = sortFns[0]
-	default:
-		i.sortFn = func(a, b string) bool {
-			for _, f := range sortFns {
-				if f(a, b) {
-					return true
-				}
-
-				if f(b, a) {
-					return false
-				}
-			}
-			return sortFns[len(sortFns)-1](a, b)
-		}
-	}
-
+	i.sortFn = sortFn
 	return i
 }
 
@@ -152,4 +133,26 @@ func (idxer *Indexes) Copy() *Indexes {
 	}
 
 	return newIndexer
+}
+
+func СompositeIndex(sorts ...func(a, b string) bool) (combined func(a, b string) bool) {
+	switch len(sorts) {
+	case 1:
+		combined = sorts[0]
+	default:
+		combined = func(a, b string) bool {
+			for _, f := range sorts {
+				if f(a, b) {
+					return true
+				}
+
+				if f(b, a) {
+					return false
+				}
+			}
+			return sorts[len(sorts)-1](a, b)
+		}
+	}
+
+	return
 }

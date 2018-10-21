@@ -102,7 +102,7 @@ func TestIndex_Copy(t *testing.T) {
 
 func TestIndex_MultipleIndex(t *testing.T) {
 	indexer := newIndexer()
-	indexer.AddIndex(NewIndex("multiple", "*", buntdb.IndexJSON("name.last"), buntdb.IndexJSON("age")))
+	indexer.AddIndex(NewIndex("multiple", "*", СompositeIndex(buntdb.IndexJSON("name.last"), buntdb.IndexJSON("age"))))
 
 	cases := []string{
 		`{"name":{"first":"Tom","last":"Johnson"},"age":38}`,
